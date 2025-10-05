@@ -27,14 +27,65 @@ fn pick_a_random_word() -> String {
     String::from(words[rand::thread_rng().gen_range(0, words.len())].trim())
 }
 
+// Read a single valid letter from stdin. Re-prompts until the user
+// enters exactly one alphabetic character. Returns the lowercase char.
+fn read_guess() -> char {
+    loop {
+        print!("Please guess a letter: ");
+        io::stdout().flush().expect("Error flushing stdout.");
+        let mut guess = String::new();
+        io::stdin()
+            .read_line(&mut guess)
+            .expect("Error reading line.");
+        let guess = guess.trim();
+
+        if guess.len() != 1 {
+            println!("Please enter exactly one character.");
+            continue;
+        }
+
+        let ch = guess.chars().next().unwrap();
+        if !ch.is_alphabetic() {
+            println!("Please enter a letter (a-z) || (A-Z).",);
+            continue;
+        }
+        println!();
+        return ch.to_ascii_lowercase();
+    }
+}
+
 fn main() {
     let secret_word = pick_a_random_word();
-    // Note: given what you know about Rust so far, it's easier to pull characters out of a
-    // vector than it is to pull them out of a string. You can get the ith character of
-    // secret_word by doing secret_word_chars[i].
     let secret_word_chars: Vec<char> = secret_word.chars().collect();
-    // Uncomment for debugging:
-    // println!("random word: {}", secret_word);
+    let mut have_guessed: Vec<char> = vec![];
+    println!("Welcome to CS110L Hangman!");
+    let mut guessed_word: Vec<char> = vec!['_'; secret_word.len()];
+    let mut can_guesses = NUM_INCORRECT_GUESSES;
+    while guessed_word != secret_word_chars && can_guesses > 0 {
+        println!("The word so far is {:?}", guessed_word);
+        println!("You have guessed the following letters: {:?}", have_guessed);
+        println!("You have {} guesses left", can_guesses);
+        let guess_char = read_guess();
+        have_guessed.push(guess_char);
+        let mut flag = false;
+        for i in 0..secret_word.len() {
+            if secret_word_chars[i] == guess_char && guessed_word[i] == '_' {
+                guessed_word[i] = guess_char;
+                flag = true;
+                break;
+            }
+        }
+        if !flag {
+            can_guesses -= 1;
+        }
+    }
 
-    // Your code here! :)
+    if guessed_word == secret_word_chars {
+        println!(
+            "Congratulations you guessed the secret word: {:?}!",
+            guessed_word
+        );
+    } else {
+        println!("Sorry, you ran out of guesses!");
+    }
 }
