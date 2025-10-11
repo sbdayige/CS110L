@@ -2,7 +2,7 @@ use linked_list::LinkedList;
 pub mod linked_list;
 
 fn main() {
-    let mut list: LinkedList<u32> = LinkedList::new();
+    let mut list: LinkedList<i32> = LinkedList::new();
     assert!(list.is_empty());
     assert_eq!(list.get_size(), 0);
     for i in 1..12 {
