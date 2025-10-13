@@ -2,7 +2,6 @@ use regex::Regex;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::{fmt, fs};
-use std::path::Path;
 
 const O_WRONLY: usize = 00000001;  // 只写标志
 const O_RDWR: usize = 00000002;    // 读写标志
@@ -144,7 +143,6 @@ impl OpenFile {
     /// 这个函数返回带有 ANSI 转义码的 OpenFile 名称，用于对管道名称进行着色。
     /// 它对管道名称进行哈希处理，使得相同的管道名称总是产生相同的颜色。
     /// 这对于使程序输出更易读很有用，因为用户可以快速看到指向特定管道的所有 fd。
-    #[allow(unused)] // TODO: 在 Milestone 5 中删除这一行
     pub fn colorized_name(&self) -> String {
         if self.name.starts_with("<pipe") {
             let mut hash = DefaultHasher::new();

@@ -14,9 +14,17 @@ fn main() {
 
     // Milestone 1: 使用 ps_utils::get_target() 获取目标进程
     match ps_utils::get_target(target) {
-        Ok(Some(_process)) => {
-            // 成功找到进程，暂时什么也不做
-            _process.print();
+        Ok(Some(process)) => {
+            // 成功找到进程，打印进程信息
+            process.print();
+            
+            // Milestone 5: 获取并打印子进程
+            let child_processes = ps_utils::get_child_processes(process.pid)
+                .expect("Failed to get child processes");
+            
+            for child in child_processes {
+                child.print();
+            }
         }
         Ok(None) => {
             println!("Target process '{}' not found", target);
@@ -27,6 +35,7 @@ fn main() {
             std::process::exit(1);
         }
     }
+
 }
 
 #[cfg(test)]

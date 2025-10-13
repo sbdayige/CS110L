@@ -90,7 +90,6 @@ fn get_process(pid: usize) -> Result<Option<Process>, Error> {
 /// 这个函数接收一个 pid 并返回一个 Process 结构体列表，
 /// 列表中包含所有以指定 pid 为父进程的进程。
 /// 如果 ps 无法执行或产生意外的输出格式，则返回 Error。
-#[allow(unused)] // TODO: 在 Milestone 5 中删除这一行
 pub fn get_child_processes(pid: usize) -> Result<Vec<Process>, Error> {
     let ps_output = Command::new("ps")
         .args(&["--ppid", &pid.to_string(), "-o", "pid= ppid= command="])
