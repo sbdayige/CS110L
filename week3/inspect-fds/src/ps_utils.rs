@@ -3,18 +3,17 @@ use nix::unistd::getuid;
 use std::fmt;
 use std::process::Command;
 
-/// This enum represents the possible causes that an error might occur. It's useful because it
-/// allows a caller of an API to have fine-grained control over error handling based on the
-/// specifics of what went wrong. You'll find similar ideas in Rust libraries, such as std::io:
-/// https://doc.rust-lang.org/std/io/enum.ErrorKind.html However, you won't need to do anything
-/// with this (or like this) in your own code.
+/// 这个枚举表示可能发生错误的原因。它很有用，因为它允许 API 的调用者根据出错的具体情况
+/// 对错误处理进行细粒度控制。你可以在 Rust 库中找到类似的想法，例如 std::io:
+/// https://doc.rust-lang.org/std/io/enum.ErrorKind.html 
+/// 不过，你不需要在自己的代码中做这样的事情（或类似的事情）。
 #[derive(Debug)]
 pub enum Error {
     ExecutableError(std::io::Error),
     OutputFormatError(&'static str),
 }
 
-// Generate readable representations of Error
+// 为 Error 生成可读的表示形式
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self {
@@ -24,36 +23,36 @@ impl fmt::Display for Error {
     }
 }
 
-// Make it possible to automatically convert std::io::Error to our Error type
+// 使得可以自动将 std::io::Error 转换为我们的 Error 类型
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Error {
         Error::ExecutableError(error)
     }
 }
 
-// Make it possible to automatically convert std::string::FromUtf8Error to our Error type
+// 使得可以自动将 std::string::FromUtf8Error 转换为我们的 Error 类型
 impl From<std::string::FromUtf8Error> for Error {
     fn from(_error: std::string::FromUtf8Error) -> Error {
         Error::OutputFormatError("Output is not utf-8")
     }
 }
 
-// Make it possible to automatically convert std::string::ParseIntError to our Error type
+// 使得可以自动将 std::string::ParseIntError 转换为我们的 Error 类型
 impl From<std::num::ParseIntError> for Error {
     fn from(_error: std::num::ParseIntError) -> Error {
         Error::OutputFormatError("Error parsing integer")
     }
 }
 
-/// This function takes a line of ps output formatted with -o "pid= ppid= command=" and returns a
-/// Process struct initialized from the parsed output.
+/// 这个函数接收一行用 -o "pid= ppid= command=" 格式化的 ps 输出，
+/// 并返回一个从解析的输出初始化的 Process 结构体。
 ///
-/// Example line:
+/// 示例行：
 /// "  578   577 emacs inode.c"
-#[allow(unused)] // TODO: delete this line for Milestone 1
+// #[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 fn parse_ps_line(line: &str) -> Result<Process, Error> {
-    // ps doesn't output a very nice machine-readable output, so we do some wonky things here to
-    // deal with variable amounts of whitespace.
+    // ps 不会输出很好的机器可读输出，所以我们在这里做一些奇怪的事情来
+    // 处理可变数量的空白字符。
     let mut remainder = line.trim();
     let first_token_end = remainder
         .find(char::is_whitespace)
@@ -68,24 +67,21 @@ fn parse_ps_line(line: &str) -> Result<Process, Error> {
     Ok(Process::new(pid, ppid, String::from(remainder)))
 }
 
-/// This function takes a pid and returns a Process struct for the specified process, or None if
-/// the specified pid doesn't exist. An Error is only returned if ps cannot be executed or
-/// produces unexpected output format.
-#[allow(unused)] // TODO: delete this line for Milestone 1
+/// 这个函数接收一个 pid 并返回指定进程的 Process 结构体，如果指定的 pid 不存在则返回 None。
+/// 只有当 ps 无法执行或产生意外的输出格式时才会返回 Error。
+// #[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 fn get_process(pid: usize) -> Result<Option<Process>, Error> {
-    // Run ps to find the specified pid. We use the ? operator to return an Error if executing ps
-    // fails, or if it returns non-utf-8 output. (The extra Error traits above are used to
-    // automatically convert errors like std::io::Error or std::string::FromUtf8Error into our
-    // custom error type.)
+    // 运行 ps 来查找指定的 pid。我们使用 ? 运算符在执行 ps 失败或返回非 utf-8 输出时返回 Error。
+    // (上面的额外 Error trait 用于自动将像 std::io::Error 或 std::string::FromUtf8Error 
+    // 这样的错误转换为我们的自定义错误类型。)
     let output = String::from_utf8(
         Command::new("ps")
             .args(&["--pid", &pid.to_string(), "-o", "pid= ppid= command="])
             .output()?
             .stdout,
     )?;
-    // Return Some if the process was found and output parsing succeeds, or None if ps produced no
-    // output (indicating there is no matching process). Note the use of ? to propagate Error if an
-    // error occured in parsing the output.
+    // 如果找到了进程并且输出解析成功，则返回 Some；如果 ps 没有产生输出（表示没有匹配的进程），
+    // 则返回 None。注意使用 ? 来传播在解析输出时发生的错误。
     if output.trim().len() > 0 {
         Ok(Some(parse_ps_line(output.trim())?))
     } else {
@@ -93,10 +89,10 @@ fn get_process(pid: usize) -> Result<Option<Process>, Error> {
     }
 }
 
-/// This function takes a pid and returns a list of Process structs for processes that have the
-/// specified pid as their parent process. An Error is returned if ps cannot be executed or
-/// produces unexpected output format.
-#[allow(unused)] // TODO: delete this line for Milestone 5
+/// 这个函数接收一个 pid 并返回一个 Process 结构体列表，
+/// 列表中包含所有以指定 pid 为父进程的进程。
+/// 如果 ps 无法执行或产生意外的输出格式，则返回 Error。
+#[allow(unused)] // TODO: 在 Milestone 5 中删除这一行
 pub fn get_child_processes(pid: usize) -> Result<Vec<Process>, Error> {
     let ps_output = Command::new("ps")
         .args(&["--ppid", &pid.to_string(), "-o", "pid= ppid= command="])
@@ -108,10 +104,9 @@ pub fn get_child_processes(pid: usize) -> Result<Vec<Process>, Error> {
     Ok(output)
 }
 
-/// This function takes a command name (e.g. "sort" or "./multi_pipe_test") and returns the first
-/// matching process's pid, or None if no matching process is found. It returns an Error if there
-/// is an error running pgrep or parsing pgrep's output.
-#[allow(unused)] // TODO: delete this line for Milestone 1
+/// 这个函数接收一个命令名（例如 "sort" 或 "./multi_pipe_test"）并返回第一个匹配进程的 pid，
+/// 如果没有找到匹配的进程则返回 None。如果运行 pgrep 或解析 pgrep 的输出时出错，则返回 Error。
+#[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 fn get_pid_by_command_name(name: &str) -> Result<Option<usize>, Error> {
     let output = String::from_utf8(
         Command::new("pgrep")
@@ -125,17 +120,16 @@ fn get_pid_by_command_name(name: &str) -> Result<Option<usize>, Error> {
     })
 }
 
-/// This program finds a target process on the system. The specified query can either be a
-/// command name (e.g. "./subprocess_test") or a PID (e.g. "5612"). This function returns a
-/// Process struct if the specified process was found, None if no matching processes were found, or
-/// Error if an error was encountered in running ps or pgrep.
-#[allow(unused)] // TODO: delete this line for Milestone 1
+/// 这个程序在系统上查找目标进程。指定的查询可以是命令名（例如 "./subprocess_test"）
+/// 或 PID（例如 "5612"）。如果找到了指定的进程，此函数返回 Process 结构体；
+/// 如果没有找到匹配的进程，返回 None；如果在运行 ps 或 pgrep 时遇到错误，返回 Error。
+#[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 pub fn get_target(query: &str) -> Result<Option<Process>, Error> {
     let pid_by_command = get_pid_by_command_name(query)?;
     if pid_by_command.is_some() {
         return get_process(pid_by_command.unwrap());
     }
-    // If searching for the query as a command name failed, let's see if it's a valid pid
+    // 如果将查询作为命令名搜索失败，让我们看看它是否是一个有效的 pid
     match query.parse() {
         Ok(pid) => return get_process(pid),
         Err(_) => return Ok(None),
