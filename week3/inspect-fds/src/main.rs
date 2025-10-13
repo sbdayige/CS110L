@@ -16,7 +16,7 @@ fn main() {
     match ps_utils::get_target(target) {
         Ok(Some(_process)) => {
             // 成功找到进程，暂时什么也不做
-            println!("Found pid {}",_process.pid);
+            _process.print();
         }
         Ok(None) => {
             println!("Target process '{}' not found", target);
