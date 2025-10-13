@@ -49,7 +49,6 @@ impl From<std::num::ParseIntError> for Error {
 ///
 /// 示例行：
 /// "  578   577 emacs inode.c"
-// #[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 fn parse_ps_line(line: &str) -> Result<Process, Error> {
     // ps 不会输出很好的机器可读输出，所以我们在这里做一些奇怪的事情来
     // 处理可变数量的空白字符。
@@ -69,7 +68,6 @@ fn parse_ps_line(line: &str) -> Result<Process, Error> {
 
 /// 这个函数接收一个 pid 并返回指定进程的 Process 结构体，如果指定的 pid 不存在则返回 None。
 /// 只有当 ps 无法执行或产生意外的输出格式时才会返回 Error。
-// #[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 fn get_process(pid: usize) -> Result<Option<Process>, Error> {
     // 运行 ps 来查找指定的 pid。我们使用 ? 运算符在执行 ps 失败或返回非 utf-8 输出时返回 Error。
     // (上面的额外 Error trait 用于自动将像 std::io::Error 或 std::string::FromUtf8Error 
@@ -106,7 +104,6 @@ pub fn get_child_processes(pid: usize) -> Result<Vec<Process>, Error> {
 
 /// 这个函数接收一个命令名（例如 "sort" 或 "./multi_pipe_test"）并返回第一个匹配进程的 pid，
 /// 如果没有找到匹配的进程则返回 None。如果运行 pgrep 或解析 pgrep 的输出时出错，则返回 Error。
-#[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 fn get_pid_by_command_name(name: &str) -> Result<Option<usize>, Error> {
     let output = String::from_utf8(
         Command::new("pgrep")
@@ -123,7 +120,6 @@ fn get_pid_by_command_name(name: &str) -> Result<Option<usize>, Error> {
 /// 这个程序在系统上查找目标进程。指定的查询可以是命令名（例如 "./subprocess_test"）
 /// 或 PID（例如 "5612"）。如果找到了指定的进程，此函数返回 Process 结构体；
 /// 如果没有找到匹配的进程，返回 None；如果在运行 ps 或 pgrep 时遇到错误，返回 Error。
-#[allow(unused)] // TODO: 在 Milestone 1 中删除这一行
 pub fn get_target(query: &str) -> Result<Option<Process>, Error> {
     let pid_by_command = get_pid_by_command_name(query)?;
     if pid_by_command.is_some() {

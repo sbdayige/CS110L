@@ -10,11 +10,23 @@ fn main() {
         println!("Usage: {} <name or pid of target>", args[0]);
         std::process::exit(1);
     }
-    #[allow(unused)] // TODO: delete this line for Milestone 1
     let target = &args[1];
 
-    // TODO: Milestone 1: Get the target Process using psutils::get_target()
-    unimplemented!();
+    // Milestone 1: 使用 ps_utils::get_target() 获取目标进程
+    match ps_utils::get_target(target) {
+        Ok(Some(_process)) => {
+            // 成功找到进程，暂时什么也不做
+            println!("Found pid {}",_process.pid);
+        }
+        Ok(None) => {
+            println!("Target process '{}' not found", target);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            println!("Error finding process: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
