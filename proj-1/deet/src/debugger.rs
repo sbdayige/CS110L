@@ -35,9 +35,26 @@ impl Debugger {
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
-                        // TODO (milestone 1): make the inferior run
-                        // You may use self.inferior.as_mut().unwrap() to get a mutable reference
-                        // to the Inferior object
+                        
+                        // Continue the inferior and print its status
+                        match self.inferior.as_ref().unwrap().cont() {
+                            Ok(status) => {
+                                match status {
+                                    crate::inferior::Status::Stopped(signal, rip) => {
+                                        println!("Child stopped (signal {}), rip = {:#x}", signal, rip);
+                                    }
+                                    crate::inferior::Status::Exited(exit_code) => {
+                                        println!("Child exited (status {})", exit_code);
+                                    }
+                                    crate::inferior::Status::Signaled(signal) => {
+                                        println!("Child terminated (signal {})", signal);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                println!("Error continuing inferior: {}", err);
+                            }
+                        }
                     } else {
                         println!("Error starting subprocess");
                     }
