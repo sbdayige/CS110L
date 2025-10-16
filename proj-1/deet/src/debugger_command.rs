@@ -1,6 +1,7 @@
 pub enum DebuggerCommand {
     Quit,
     Run(Vec<String>),
+    Continue,
 }
 
 impl DebuggerCommand {
@@ -14,6 +15,9 @@ impl DebuggerCommand {
                 ))
             }
             // Default case:
+            "c" | "cont" | "continue" => {
+                Some(DebuggerCommand::Continue)
+            }
             _ => None,
         }
     }

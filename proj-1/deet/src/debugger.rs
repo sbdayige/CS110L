@@ -32,6 +32,11 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    // Kill any existing inferior process before starting a new one
+                    if let Some(ref mut inferior) = self.inferior {
+                        let _ = inferior.kill();
+                    }
+                    
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
@@ -40,8 +45,8 @@ impl Debugger {
                         match self.inferior.as_ref().unwrap().cont() {
                             Ok(status) => {
                                 match status {
-                                    crate::inferior::Status::Stopped(signal, rip) => {
-                                        println!("Child stopped (signal {}), rip = {:#x}", signal, rip);
+                                    crate::inferior::Status::Stopped(signal, _rip) => {
+                                        println!("Child stopped (signal {})", signal);
                                     }
                                     crate::inferior::Status::Exited(exit_code) => {
                                         println!("Child exited (status {})", exit_code);
@@ -59,7 +64,37 @@ impl Debugger {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Continue => {
+                    // Check if there is an inferior process running
+                    if let Some(inferior) = &self.inferior {
+                        // Continue the inferior and print its status
+                        match inferior.cont() {
+                            Ok(status) => {
+                                match status {
+                                    crate::inferior::Status::Stopped(signal, rip) => {
+                                        println!("Child stopped (signal {})", signal);
+                                    }
+                                    crate::inferior::Status::Exited(exit_code) => {
+                                        println!("Child exited (status {})", exit_code);
+                                    }
+                                    crate::inferior::Status::Signaled(signal) => {
+                                        println!("Child terminated (signal {})", signal);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                println!("Error continuing inferior: {}", err);
+                            }
+                        }
+                    } else {
+                        println!("No inferior process running");
+                    }
+                }
                 DebuggerCommand::Quit => {
+                    // Kill any existing inferior process before quitting
+                    if let Some(ref mut inferior) = self.inferior {
+                        let _ = inferior.kill();
+                    }
                     return;
                 }
             }

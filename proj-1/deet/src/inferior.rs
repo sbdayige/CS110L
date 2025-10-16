@@ -102,4 +102,9 @@ impl Inferior {
         // Wait for the inferior to stop or terminate
         self.wait(None)
     }
+
+    pub fn kill(&mut self) -> Result<(), std::io::Error> {
+        println!("Killing running inferior (pid {})", self.pid());
+        self.child.kill()
+    }
 }
