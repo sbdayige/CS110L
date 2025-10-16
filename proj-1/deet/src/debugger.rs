@@ -60,8 +60,18 @@ impl Debugger {
                         match self.inferior.as_ref().unwrap().cont() {
                             Ok(status) => {
                                 match status {
-                                    crate::inferior::Status::Stopped(signal, _rip) => {
+                                    crate::inferior::Status::Stopped(signal, rip) => {
                                         println!("Child stopped (signal {})", signal);
+                                        if let Some(debug_data) = &self.debug_data {
+                                            let line = match debug_data.get_line_from_addr(rip) {
+                                                Some(line) => line,
+                                                None => {
+                                                    println!("Unknown function");
+                                                    break;
+                                                }
+                                            };
+                                            println!("Stopped at {}",line);
+                                        }
                                     }
                                     crate::inferior::Status::Exited(exit_code) => {
                                         println!("Child exited (status {})", exit_code);
