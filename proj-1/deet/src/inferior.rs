@@ -113,23 +113,46 @@ impl Inferior {
     pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
         // Get the register values using ptrace::getregs
         let regs = ptrace::getregs(self.pid())?;
-        let rip = regs.rip as usize;
+        let mut rip = regs.rip as usize;
+        let mut rbp = regs.rbp as usize;
         
-        // Print the %rip register value
-        println!("%rip register: {:#x}", rip);
-        
-        // Get the function name from the current instruction address
-        if let Some(function_name) = debug_data.get_function_from_addr(rip) {
-            println!("Function: {}", function_name);
-        } else {
-            println!("Function: <unknown>");
-        }
-        
-        // Get the source file and line number from the current instruction address
-        if let Some(line) = debug_data.get_line_from_addr(rip) {
-            println!("Source location: {}:{}", line.file, line.number);
-        } else {
-            println!("Source location: <unknown>");
+        loop {
+            // Get the function name from the current instruction address
+            let function_name = match debug_data.get_function_from_addr(rip) {
+                Some(name) => name,
+                None => {
+                    println!("Unknown function at {:#x}", rip);
+                    break;
+                }
+            };
+            
+            // Get the source file and line number from the current instruction address
+            let line = match debug_data.get_line_from_addr(rip) {
+                Some(line) => line,
+                None => {
+                    println!("Unknown location for function {}", function_name);
+                    break;
+                }
+            };
+            
+            // Print the backtrace information
+            println!("{} ({}:{})", function_name, line.file, line.number);
+            
+            // Check if we've reached the main function
+            if function_name == "main" {
+                break;
+            }
+    
+            // Read the return address (saved rip) from [rbp + 8]
+            rip = ptrace::read(self.pid(), (rbp + 8) as ptrace::AddressType)? as usize;
+            
+            // Read the saved frame pointer (previous rbp) from [rbp]
+            rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
+            
+            // Safety check: if rbp is 0 or rip is 0, we've reached the end of the stack
+            if rbp == 0 || rip == 0 {
+                break;
+            }
         }
         
         Ok(())
