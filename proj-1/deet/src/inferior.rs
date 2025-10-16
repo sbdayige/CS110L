@@ -7,6 +7,8 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+use crate::dwarf_data::DwarfData;
+
 #[derive(Debug)]
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -106,5 +108,30 @@ impl Inferior {
     pub fn kill(&mut self) -> Result<(), std::io::Error> {
         println!("Killing running inferior (pid {})", self.pid());
         self.child.kill()
+    }
+
+    pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
+        // Get the register values using ptrace::getregs
+        let regs = ptrace::getregs(self.pid())?;
+        let rip = regs.rip as usize;
+        
+        // Print the %rip register value
+        println!("%rip register: {:#x}", rip);
+        
+        // Get the function name from the current instruction address
+        if let Some(function_name) = debug_data.get_function_from_addr(rip) {
+            println!("Function: {}", function_name);
+        } else {
+            println!("Function: <unknown>");
+        }
+        
+        // Get the source file and line number from the current instruction address
+        if let Some(line) = debug_data.get_line_from_addr(rip) {
+            println!("Source location: {}:{}", line.file, line.number);
+        } else {
+            println!("Source location: <unknown>");
+        }
+        
+        Ok(())
     }
 }

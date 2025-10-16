@@ -1,5 +1,6 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::inferior::{Inferior};
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -8,12 +9,25 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data : Option<DwarfData>,
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
         // TODO (milestone 3): initialize the DwarfData
+
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!("Could not debugging symbols from {}: {:?}", target, err);
+                std::process::exit(1);
+            }
+        };
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -25,6 +39,7 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            debug_data : Some(debug_data),
         }
     }
 
@@ -64,6 +79,7 @@ impl Debugger {
                         println!("Error starting subprocess");
                     }
                 }
+                
                 DebuggerCommand::Continue => {
                     // Check if there is an inferior process running
                     if let Some(inferior) = &self.inferior {
@@ -71,7 +87,7 @@ impl Debugger {
                         match inferior.cont() {
                             Ok(status) => {
                                 match status {
-                                    crate::inferior::Status::Stopped(signal, rip) => {
+                                    crate::inferior::Status::Stopped(signal, _rip) => {
                                         println!("Child stopped (signal {})", signal);
                                     }
                                     crate::inferior::Status::Exited(exit_code) => {
@@ -90,6 +106,16 @@ impl Debugger {
                         println!("No inferior process running");
                     }
                 }
+
+               DebuggerCommand::Backtrace => {
+                    // return ;
+                    if let Some(inferior) = &self.inferior {
+                        if let Some(debug_data) = & self.debug_data{
+                            let _ = inferior.print_backtrace(debug_data);
+                        }
+                    }                
+                }
+                
                 DebuggerCommand::Quit => {
                     // Kill any existing inferior process before quitting
                     if let Some(ref mut inferior) = self.inferior {
