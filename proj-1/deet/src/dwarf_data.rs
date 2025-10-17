@@ -146,6 +146,25 @@ impl DwarfData {
             }
         }
     }
+
+    /// Get all variables (global and local) available at a given address
+    #[allow(dead_code)]
+    pub fn get_variables_at_addr(&self, addr: usize) -> Option<(Vec<Variable>, Vec<Variable>)> {
+        // Find the function containing this address
+        for file in &self.files {
+            // Collect global variables from this file
+            let global_vars = file.global_variables.clone();
+            
+            // Find the function containing the address
+            for func in &file.functions {
+                if addr >= func.address && addr < func.address + func.text_length {
+                    // Found the function, return its local variables and global variables
+                    return Some((global_vars, func.variables.clone()));
+                }
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, Default)]

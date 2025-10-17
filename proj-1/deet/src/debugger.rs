@@ -142,6 +142,24 @@ impl Debugger {
                         }
                     }                
                 }
+
+                DebuggerCommand::Print => {
+                    // Print variables at current location
+                    if let Some(inferior) = &self.inferior {
+                        if let Some(debug_data) = &self.debug_data {
+                            match inferior.print_variables(debug_data) {
+                                Ok(_) => {},
+                                Err(e) => {
+                                    println!("Error printing variables: {}", e);
+                                }
+                            }
+                        } else {
+                            println!("No debug information available");
+                        }
+                    } else {
+                        println!("No inferior process running");
+                    }
+                }
                 
                 DebuggerCommand::Break(target) => {
                     let addr = if target.starts_with('*') {

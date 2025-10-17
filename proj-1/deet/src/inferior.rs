@@ -262,4 +262,132 @@ impl Inferior {
         
         Ok(())
     }
+
+    /// Read variable value from inferior's memory based on location
+    fn read_variable_value(&self, location: &crate::dwarf_data::Location, rbp: usize, size: usize) -> Result<Vec<u8>, nix::Error> {
+        use crate::dwarf_data::Location;
+        
+        let addr = match location {
+            Location::Address(addr) => *addr,
+            Location::FramePointerOffset(offset) => {
+                if *offset >= 0 {
+                    rbp + (*offset as usize)
+                } else {
+                    rbp - ((-*offset) as usize)
+                }
+            }
+        };
+        
+        let mut bytes = Vec::new();
+        let mut current_addr = addr;
+        
+        // Read the variable data byte by byte
+        for _ in 0..size {
+            let aligned_addr = align_addr_to_word(current_addr);
+            let byte_offset = current_addr - aligned_addr;
+            let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType)? as u64;
+            let byte = ((word >> (8 * byte_offset)) & 0xff) as u8;
+            bytes.push(byte);
+            current_addr += 1;
+        }
+        
+        Ok(bytes)
+    }
+
+    /// Print all variables available at the current instruction pointer
+    pub fn print_variables(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
+        let regs = ptrace::getregs(self.pid())?;
+        let rip = regs.rip as usize;
+        let rbp = regs.rbp as usize;
+        
+        // Get variables at the current address
+        if let Some((global_vars, local_vars)) = debug_data.get_variables_at_addr(rip) {
+            println!("Variables at current location:");
+            println!("");
+            
+            if !global_vars.is_empty() {
+                println!("Global variables:");
+                for var in &global_vars {
+                    match self.read_variable_value(&var.location, rbp, var.entity_type.size) {
+                        Ok(bytes) => {
+                            print!("  {} ({}, {} bytes) = ", var.name, var.entity_type.name, var.entity_type.size);
+                            self.print_formatted_value(&bytes, &var.entity_type.name);
+                        }
+                        Err(e) => {
+                            println!("  {} ({}, {} bytes) = <error reading: {}>", 
+                                var.name, var.entity_type.name, var.entity_type.size, e);
+                        }
+                    }
+                }
+                println!("");
+            }
+            
+            if !local_vars.is_empty() {
+                println!("Local variables:");
+                for var in &local_vars {
+                    match self.read_variable_value(&var.location, rbp, var.entity_type.size) {
+                        Ok(bytes) => {
+                            print!("  {} ({}, {} bytes) = ", var.name, var.entity_type.name, var.entity_type.size);
+                            self.print_formatted_value(&bytes, &var.entity_type.name);
+                        }
+                        Err(e) => {
+                            println!("  {} ({}, {} bytes) = <error reading: {}>", 
+                                var.name, var.entity_type.name, var.entity_type.size, e);
+                        }
+                    }
+                }
+            }
+            
+            if global_vars.is_empty() && local_vars.is_empty() {
+                println!("  No variables found at current location");
+            }
+        } else {
+            println!("Unable to determine variables at current location");
+        }
+        
+        Ok(())
+    }
+
+    /// Format and print value based on type
+    fn print_formatted_value(&self, bytes: &[u8], type_name: &str) {
+        if bytes.is_empty() {
+            println!("<empty>");
+            return;
+        }
+        
+        // Try to interpret based on type name
+        match type_name {
+            "int" | "i32" if bytes.len() == 4 => {
+                let value = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                println!("{}", value);
+            }
+            "long" | "i64" | "long int" if bytes.len() == 8 => {
+                let value = i64::from_le_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                    bytes[4], bytes[5], bytes[6], bytes[7]
+                ]);
+                println!("{}", value);
+            }
+            "char" | "i8" if bytes.len() == 1 => {
+                let value = bytes[0] as i8;
+                if value >= 32 && value <= 126 {
+                    println!("{} ('{}')", value, value as u8 as char);
+                } else {
+                    println!("{}", value);
+                }
+            }
+            "short" | "i16" if bytes.len() == 2 => {
+                let value = i16::from_le_bytes([bytes[0], bytes[1]]);
+                println!("{}", value);
+            }
+            _ => {
+                // Default: print as hex bytes
+                print!("0x");
+                for byte in bytes.iter().rev() {
+                    print!("{:02x}", byte);
+                }
+                println!();
+            }
+        }
+    }
 }
