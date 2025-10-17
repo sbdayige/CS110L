@@ -2,6 +2,7 @@ use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::process::Child;
 use std::process::Command;
@@ -12,6 +13,12 @@ use crate::dwarf_data::DwarfData;
 
 fn align_addr_to_word(addr: usize) -> usize {
     addr & (-(size_of::<usize>() as isize) as usize)
+}
+
+#[derive(Clone)]
+struct Breakpoint {
+    addr: usize,
+    orig_byte: u8,
 }
 
 #[derive(Debug)]
@@ -39,6 +46,7 @@ fn child_traceme() -> Result<(), std::io::Error> {
 
 pub struct Inferior {
     child: Child,
+    breakpoints: HashMap<usize, Breakpoint>,
 }
 
 impl Inferior {
@@ -62,7 +70,9 @@ impl Inferior {
     /// Installs a breakpoint at the specified address by writing 0xcc to that location.
     /// Returns the original byte at that address, or an error if it fails.
     pub fn install_breakpoint(&mut self, addr: usize) -> Result<u8, nix::Error> {
-        self.write_byte(addr, 0xcc)
+        let orig_byte = self.write_byte(addr, 0xcc)?;
+        self.breakpoints.insert(addr, Breakpoint { addr, orig_byte });
+        Ok(orig_byte)
     }
 
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
@@ -88,7 +98,10 @@ impl Inferior {
         };
         
         // Create the Inferior object
-        let mut inferior = Inferior { child };
+        let mut inferior = Inferior { 
+            child,
+            breakpoints: HashMap::new(),
+        };
         
         // Wait for the child to stop (it will stop immediately after exec due to PTRACE_TRACEME)
         // We expect it to stop with SIGTRAP signal
@@ -99,6 +112,8 @@ impl Inferior {
                     match inferior.write_byte(addr, 0xcc) {
                         Ok(orig_byte) => {
                             println!("Set breakpoint at {:#x} (original byte: {:#x})", addr, orig_byte);
+                            // Store the breakpoint information in the HashMap
+                            inferior.breakpoints.insert(addr, Breakpoint { addr, orig_byte });
                         }
                         Err(e) => {
                             eprintln!("Failed to set breakpoint at {:#x}: {}", addr, e);
@@ -139,11 +154,60 @@ impl Inferior {
 
     /// Continues execution of the inferior process and waits until it stops or terminates.
     /// Returns the status of the inferior after it stops.
-    pub fn cont(&self) -> Result<Status, nix::Error> {
-        // Use ptrace::cont to wake up the inferior (pass None for sig)
+    pub fn cont(&mut self) -> Result<Status, nix::Error> {
+        // Step 1: Check if we're currently at a breakpoint
+        let mut regs = ptrace::getregs(self.pid())?;
+        let rip = regs.rip as usize;
+        
+        // When we hit a breakpoint (0xcc INT instruction), the CPU executes it,
+        // triggers SIGTRAP, and rip points to the next instruction.
+        // So we check if (rip - 1) is a breakpoint address.
+        if self.breakpoints.contains_key(&(rip - 1)) {
+            let breakpoint_addr = rip - 1;
+            
+            // Step 2: Single-step to execute the next instruction
+            ptrace::step(self.pid(), None)?;
+            
+            // Step 3: Wait for the step to complete
+            match self.wait(None)? {
+                Status::Exited(exit_code) => return Ok(Status::Exited(exit_code)),
+                Status::Signaled(signal) => return Ok(Status::Signaled(signal)),
+                Status::Stopped(_, _) => {
+                    // Step 4: Restore the breakpoint (write 0xcc back)
+                    self.write_byte(breakpoint_addr, 0xcc)?;
+                }
+            }
+        }
+        
+        // Step 5: Continue normal execution
         ptrace::cont(self.pid(), None)?;
-        // Wait for the inferior to stop or terminate
-        self.wait(None)
+        
+        // Step 6: Wait for the inferior to stop or terminate
+        let status = self.wait(None)?;
+        
+        // Step 7: Check if we stopped at a breakpoint
+        match status {
+            Status::Stopped(signal, rip) => {
+                // Check if this is a breakpoint hit (rip - 1 matches a breakpoint)
+                if self.breakpoints.contains_key(&(rip - 1)) {
+                    let breakpoint_addr = rip - 1;
+                    let breakpoint = self.breakpoints.get(&breakpoint_addr).unwrap().clone();
+                    
+                    // Restore the first byte of the instruction we replaced
+                    self.write_byte(breakpoint_addr, breakpoint.orig_byte)?;
+                    
+                    // Rewind the instruction pointer to point at the original instruction
+                    let mut regs = ptrace::getregs(self.pid())?;
+                    regs.rip = breakpoint_addr as u64;
+                    ptrace::setregs(self.pid(), regs)?;
+                    
+                    Ok(Status::Stopped(signal, rip))
+                } else {
+                    Ok(status)
+                }
+            }
+            _ => Ok(status),
+        }
     }
 
     pub fn kill(&mut self) -> Result<(), std::io::Error> {

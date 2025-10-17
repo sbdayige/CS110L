@@ -36,7 +36,10 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
+        
+        // Print debug information at startup
         debug_data.print();
+        
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
@@ -66,7 +69,7 @@ impl Debugger {
                         self.inferior = Some(inferior);
                         
                         // Continue the inferior and print its status
-                        match self.inferior.as_ref().unwrap().cont() {
+                        match self.inferior.as_mut().unwrap().cont() {
                             Ok(status) => {
                                 match status {
                                     crate::inferior::Status::Stopped(signal, rip) => {
@@ -101,13 +104,18 @@ impl Debugger {
                 
                 DebuggerCommand::Continue => {
                     // Check if there is an inferior process running
-                    if let Some(inferior) = &self.inferior {
+                    if let Some(ref mut inferior) = self.inferior {
                         // Continue the inferior and print its status
                         match inferior.cont() {
                             Ok(status) => {
                                 match status {
-                                    crate::inferior::Status::Stopped(signal, _rip) => {
+                                    crate::inferior::Status::Stopped(signal, rip) => {
                                         println!("Child stopped (signal {})", signal);
+                                        if let Some(debug_data) = &self.debug_data {
+                                            if let Some(line) = debug_data.get_line_from_addr(rip) {
+                                                println!("Stopped at {}", line);
+                                            }
+                                        }
                                     }
                                     crate::inferior::Status::Exited(exit_code) => {
                                         println!("Child exited (status {})", exit_code);

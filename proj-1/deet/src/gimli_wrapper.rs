@@ -58,15 +58,33 @@ pub fn load_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<
             // Update the variable list for formal params/variables
             match entry.tag() {
                 gimli::DW_TAG_compile_unit => {
-                    let name = if let Ok(Some(attr)) = entry.attr(gimli::DW_AT_name) {
-                        if let Ok(DebugValue::Str(name)) = get_attr_value(&attr, &unit, &dwarf) {
-                            name
+                    // Get the compilation unit name from line program file 1
+                    let name = if let Some(ref line_program) = unit.line_program {
+                        let header = line_program.header();
+                        // File index 1 is typically the main source file
+                        if let Some(file_entry) = header.file(1) {
+                            let mut path = path::PathBuf::new();
+                            
+                            // Get directory
+                            if let Some(dir) = file_entry.directory(header) {
+                                if let Ok(dir_str) = dwarf.attr_string(&unit, dir) {
+                                    path.push(dir_str.to_string_lossy().as_ref());
+                                }
+                            }
+                            
+                            // Get filename
+                            if let Ok(file_str) = dwarf.attr_string(&unit, file_entry.path_name()) {
+                                path.push(file_str.to_string_lossy().as_ref());
+                            }
+                            
+                            path.to_string_lossy().to_string()
                         } else {
                             "<unknown>".to_string()
                         }
                     } else {
                         "<unknown>".to_string()
                     };
+                    
                     compilation_units.push(File {
                         name,
                         global_variables: Vec::new(),
@@ -221,9 +239,22 @@ pub fn load_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<
                     }
 
                     // Get the File
+                    let path_str = path.as_os_str().to_str().unwrap();
                     let file = compilation_units
                         .iter_mut()
-                        .find(|f| f.name == path.as_os_str().to_str().unwrap());
+                        .find(|f| {
+                            // Try exact match first
+                            if f.name == path_str {
+                                return true;
+                            }
+                            // Try matching just the filename
+                            if let Some(filename) = path.file_name() {
+                                if f.name.ends_with(filename.to_str().unwrap()) {
+                                    return true;
+                                }
+                            }
+                            false
+                        });
 
                     // Determine line/column. DWARF line/column is never 0, so we use that
                     // but other applications may want to display this differently.
