@@ -9,14 +9,22 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
-    debug_data : Option<DwarfData>,
+    debug_data: Option<DwarfData>,
+    breakpoints: Vec<usize>,
+}
+
+fn parse_address(addr: &str) -> Option<usize> {
+    let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+        &addr[2..]
+    } else {
+        &addr
+    };
+    usize::from_str_radix(addr_without_0x, 16).ok()
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
-        // TODO (milestone 3): initialize the DwarfData
-
         let debug_data = match DwarfData::from_file(target) {
             Ok(val) => val,
             Err(DwarfError::ErrorOpeningFile) => {
@@ -28,7 +36,7 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
-
+        debug_data.print();
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
@@ -39,7 +47,8 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
-            debug_data : Some(debug_data),
+            debug_data: Some(debug_data),
+            breakpoints: Vec::new(),
         }
     }
 
@@ -52,7 +61,7 @@ impl Debugger {
                         let _ = inferior.kill();
                     }
                     
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args,&self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         
@@ -126,6 +135,42 @@ impl Debugger {
                     }                
                 }
                 
+                DebuggerCommand::Break(target) => {
+                    // Check if the target starts with '*' (address breakpoint)
+                    if !target.starts_with('*') {
+                        println!("Invalid breakpoint format. Use: break *<address>");
+                        continue;
+                    }
+                    
+                    // Extract the address (remove the '*' prefix)
+                    let addr_str = &target[1..];
+                    
+                    // Parse the address
+                    match parse_address(addr_str) {
+                        Some(addr) => {
+                            // Add to breakpoints list
+                            self.breakpoints.push(addr);
+                            let breakpoint_num = self.breakpoints.len() - 1;
+                            println!("Set breakpoint {} at {:#x}", breakpoint_num, addr);
+                            
+                            // If there's a running inferior, install the breakpoint immediately
+                            if let Some(ref mut inferior) = self.inferior {
+                                match inferior.install_breakpoint(addr) {
+                                    Ok(orig_byte) => {
+                                        println!("Installed breakpoint at {:#x} (original byte: {:#x})", addr, orig_byte);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to install breakpoint at {:#x}: {}", addr, e);
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            println!("Invalid address format: {}", addr_str);
+                        }
+                    }
+                }
+
                 DebuggerCommand::Quit => {
                     // Kill any existing inferior process before quitting
                     if let Some(ref mut inferior) = self.inferior {
