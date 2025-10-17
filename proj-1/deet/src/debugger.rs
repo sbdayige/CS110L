@@ -144,37 +144,62 @@ impl Debugger {
                 }
                 
                 DebuggerCommand::Break(target) => {
-                    // Check if the target starts with '*' (address breakpoint)
-                    if !target.starts_with('*') {
-                        println!("Invalid breakpoint format. Use: break *<address>");
-                        continue;
-                    }
-                    
-                    // Extract the address (remove the '*' prefix)
-                    let addr_str = &target[1..];
-                    
-                    // Parse the address
-                    match parse_address(addr_str) {
-                        Some(addr) => {
-                            // Add to breakpoints list
-                            self.breakpoints.push(addr);
-                            let breakpoint_num = self.breakpoints.len() - 1;
-                            println!("Set breakpoint {} at {:#x}", breakpoint_num, addr);
-                            
-                            // If there's a running inferior, install the breakpoint immediately
-                            if let Some(ref mut inferior) = self.inferior {
-                                match inferior.install_breakpoint(addr) {
-                                    Ok(orig_byte) => {
-                                        println!("Installed breakpoint at {:#x} (original byte: {:#x})", addr, orig_byte);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Failed to install breakpoint at {:#x}: {}", addr, e);
-                                    }
-                                }
+                    let addr = if target.starts_with('*') {
+                        // Raw address (starts with *)
+                        let addr_str = &target[1..];
+                        match parse_address(addr_str) {
+                            Some(addr) => Some(addr),
+                            None => {
+                                println!("Invalid address format: {}", addr_str);
+                                continue;
                             }
                         }
-                        None => {
-                            println!("Invalid address format: {}", addr_str);
+                    } else if let Ok(line_number) = target.parse::<usize>() {
+                        // Line number
+                        if let Some(debug_data) = &self.debug_data {
+                            match debug_data.get_addr_for_line(None, line_number) {
+                                Some(addr) => Some(addr),
+                                None => {
+                                    println!("No code found at line {}", line_number);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            println!("No debug information available");
+                            continue;
+                        }
+                    } else {
+                        // Function name
+                        if let Some(debug_data) = &self.debug_data {
+                            match debug_data.get_addr_for_function(None, &target) {
+                                Some(addr) => Some(addr),
+                                None => {
+                                    println!("Function '{}' not found", target);
+                                    continue;
+                                }
+                            }
+                        } else {
+                            println!("No debug information available");
+                            continue;
+                        }
+                    };
+
+                    if let Some(addr) = addr {
+                        // Add to breakpoints list
+                        self.breakpoints.push(addr);
+                        let breakpoint_num = self.breakpoints.len() - 1;
+                        println!("Set breakpoint {} at {:#x}", breakpoint_num, addr);
+                        
+                        // If there's a running inferior, install the breakpoint immediately
+                        if let Some(ref mut inferior) = self.inferior {
+                            match inferior.install_breakpoint(addr) {
+                                Ok(orig_byte) => {
+                                    println!("Installed breakpoint at {:#x} (original byte: {:#x})", addr, orig_byte);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to install breakpoint at {:#x}: {}", addr, e);
+                                }
+                            }
                         }
                     }
                 }
