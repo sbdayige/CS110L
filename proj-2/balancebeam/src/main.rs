@@ -1,79 +1,76 @@
 mod request;
 mod response;
 
-use clap::Clap;
+use clap::Parser;
 use rand::{Rng, SeedableRng};
 use std::net::{TcpListener, TcpStream};
 
-/// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
-/// provide a fancy way to automatically construct a command-line argument parser.
-#[derive(Clap, Debug)]
+/// 包含从命令行调用 balancebeam 时解析的信息。Clap 宏提供了一种自动构建命令行参数解析器的便捷方式。
+#[derive(Parser, Debug)]
 #[clap(about = "Fun with load balancing")]
 struct CmdOptions {
     #[clap(
         short,
         long,
-        about = "IP/port to bind to",
+        help = "IP/port to bind to",
         default_value = "0.0.0.0:1100"
     )]
     bind: String,
-    #[clap(short, long, about = "Upstream host to forward requests to")]
+    #[clap(short, long, help = "Upstream host to forward requests to")]
     upstream: Vec<String>,
     #[clap(
         long,
-        about = "Perform active health checks on this interval (in seconds)",
+        help = "Perform active health checks on this interval (in seconds)",
         default_value = "10"
     )]
     active_health_check_interval: usize,
     #[clap(
     long,
-    about = "Path to send request to for active health checks",
+    help = "Path to send request to for active health checks",
     default_value = "/"
     )]
     active_health_check_path: String,
     #[clap(
         long,
-        about = "Maximum number of requests to accept per IP per minute (0 = unlimited)",
+        help = "Maximum number of requests to accept per IP per minute (0 = unlimited)",
         default_value = "0"
     )]
     max_requests_per_minute: usize,
 }
 
-/// Contains information about the state of balancebeam (e.g. what servers we are currently proxying
-/// to, what servers have failed, rate limiting counts, etc.)
+/// 包含有关 balancebeam 状态的信息（例如，我们当前代理到哪些服务器，哪些服务器失败了，速率限制计数等）
 ///
-/// You should add fields to this struct in later milestones.
+/// 您应该在后续里程碑中向此结构体添加字段。
 struct ProxyState {
-    /// How frequently we check whether upstream servers are alive (Milestone 4)
+    /// 检查上游服务器是否存活的频率（里程碑 4）
     #[allow(dead_code)]
     active_health_check_interval: usize,
-    /// Where we should send requests when doing active health checks (Milestone 4)
+    /// 执行主动健康检查时应该发送请求的路径（里程碑 4）
     #[allow(dead_code)]
     active_health_check_path: String,
-    /// Maximum number of requests an individual IP can make in a minute (Milestone 5)
+    /// 单个 IP 在一分钟内可以发出的最大请求数（里程碑 5）
     #[allow(dead_code)]
     max_requests_per_minute: usize,
-    /// Addresses of servers that we are proxying to
+    /// 我们正在代理到的服务器地址
     upstream_addresses: Vec<String>,
 }
 
 fn main() {
-    // Initialize the logging library. You can print log messages using the `log` macros:
-    // https://docs.rs/log/0.4.8/log/ You are welcome to continue using print! statements; this
-    // just looks a little prettier.
+    // 初始化日志库。您可以使用 `log` 宏打印日志消息：
+    // https://docs.rs/log/0.4.8/log/ 您也可以继续使用 print! 语句；这只是看起来更美观一些。
     if let Err(_) = std::env::var("RUST_LOG") {
         std::env::set_var("RUST_LOG", "debug");
     }
     pretty_env_logger::init();
 
-    // Parse the command line arguments passed to this program
+    // 解析传递给该程序的命令行参数
     let options = CmdOptions::parse();
     if options.upstream.len() < 1 {
         log::error!("At least one upstream server must be specified using the --upstream option.");
         std::process::exit(1);
     }
 
-    // Start listening for connections
+    // 开始监听连接
     let listener = match TcpListener::bind(&options.bind) {
         Ok(listener) => listener,
         Err(err) => {
@@ -83,7 +80,7 @@ fn main() {
     };
     log::info!("Listening for requests on {}", options.bind);
 
-    // Handle incoming connections
+    // 处理传入的连接
     let state = ProxyState {
         upstream_addresses: options.upstream,
         active_health_check_interval: options.active_health_check_interval,
@@ -92,7 +89,7 @@ fn main() {
     };
     for stream in listener.incoming() {
         if let Ok(stream) = stream {
-            // Handle the connection!
+            // 处理连接！
             handle_connection(stream, &state);
         }
     }
@@ -106,7 +103,7 @@ fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> 
         log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
         Err(err)
     })
-    // TODO: implement failover (milestone 3)
+    // TODO: 实现故障转移（里程碑 3）
 }
 
 fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
@@ -122,7 +119,7 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 
-    // Open a connection to a random destination server
+    // 打开与随机目标服务器的连接
     let mut upstream_conn = match connect_to_upstream(state) {
         Ok(stream) => stream,
         Err(_error) => {
@@ -133,18 +130,17 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
     };
     let upstream_ip = client_conn.peer_addr().unwrap().ip().to_string();
 
-    // The client may now send us one or more requests. Keep trying to read requests until the
-    // client hangs up or we get an error.
+    // 客户端现在可能会向我们发送一个或多个请求。继续尝试读取请求，直到客户端挂断或我们遇到错误。
     loop {
-        // Read a request from the client
+        // 从客户端读取请求
         let mut request = match request::read_from_stream(&mut client_conn) {
             Ok(request) => request,
-            // Handle case where client closed connection and is no longer sending requests
+            // 处理客户端关闭连接且不再发送请求的情况
             Err(request::Error::IncompleteRequest(0)) => {
                 log::debug!("Client finished sending requests. Shutting down connection");
                 return;
             }
-            // Handle I/O error in reading from the client
+            // 处理从客户端读取时的 I/O 错误
             Err(request::Error::ConnectionError(io_err)) => {
                 log::info!("Error reading request from client stream: {}", io_err);
                 return;
@@ -170,12 +166,11 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
             request::format_request_line(&request)
         );
 
-        // Add X-Forwarded-For header so that the upstream server knows the client's IP address.
-        // (We're the ones connecting directly to the upstream server, so without this header, the
-        // upstream server will only know our IP, not the client's.)
+        // 添加 X-Forwarded-For 头，以便上游服务器知道客户端的 IP 地址。
+        // （我们直接连接到上游服务器，所以没有这个头的话，上游服务器只知道我们的 IP，而不知道客户端的 IP。）
         request::extend_header_value(&mut request, "x-forwarded-for", &client_ip);
 
-        // Forward the request to the server
+        // 将请求转发到服务器
         if let Err(error) = request::write_to_stream(&request, &mut upstream_conn) {
             log::error!("Failed to send request to upstream {}: {}", upstream_ip, error);
             let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
@@ -184,7 +179,7 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
         }
         log::debug!("Forwarded request to server");
 
-        // Read the server's response
+        // 读取服务器的响应
         let response = match response::read_from_stream(&mut upstream_conn, request.method()) {
             Ok(response) => response,
             Err(error) => {
@@ -194,7 +189,7 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
                 return;
             }
         };
-        // Forward the response to the client
+        // 将响应转发给客户端
         send_response(&mut client_conn, &response);
         log::debug!("Forwarded response to client");
     }

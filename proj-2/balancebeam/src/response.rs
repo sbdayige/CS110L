@@ -7,29 +7,28 @@ const MAX_NUM_HEADERS: usize = 32;
 
 #[derive(Debug)]
 pub enum Error {
-    /// Client hung up before sending a complete request
+    /// 客户端在发送完整请求之前挂断
     IncompleteResponse,
-    /// Client sent an invalid HTTP request. httparse::Error contains more details
+    /// 客户端发送了无效的 HTTP 请求。httparse::Error 包含更多详细信息
     MalformedResponse(httparse::Error),
-    /// The Content-Length header is present, but does not contain a valid numeric value
+    /// Content-Length 头存在，但不包含有效的数字值
     InvalidContentLength,
-    /// The Content-Length header does not match the size of the request body that was sent
+    /// Content-Length 头与发送的请求体大小不匹配
     ContentLengthMismatch,
-    /// The request body is bigger than MAX_BODY_SIZE
+    /// 请求体大于 MAX_BODY_SIZE
     ResponseBodyTooLarge,
-    /// Encountered an I/O error when reading/writing a TcpStream
+    /// 读取/写入 TcpStream 时遇到 I/O 错误
     ConnectionError(std::io::Error),
 }
 
-/// Extracts the Content-Length header value from the provided response. Returns Ok(Some(usize)) if
-/// the Content-Length is present and valid, Ok(None) if Content-Length is not present, or
-/// Err(Error) if Content-Length is present but invalid.
+/// 从提供的响应中提取 Content-Length 头值。如果 Content-Length 存在且有效则返回 Ok(Some(usize))，
+/// 如果 Content-Length 不存在则返回 Ok(None)，如果 Content-Length 存在但无效则返回 Err(Error)。
 ///
-/// You won't need to touch this function.
+/// 您不需要修改此函数。
 fn get_content_length(response: &http::Response<Vec<u8>>) -> Result<Option<usize>, Error> {
-    // Look for content-length header
+    // 查找 content-length 头
     if let Some(header_value) = response.headers().get("content-length") {
-        // If it exists, parse it as a usize (or return InvalidResponseFormat if it can't be parsed as such)
+        // 如果存在，将其解析为 usize（如果无法解析则返回 InvalidResponseFormat）
         Ok(Some(
             header_value
                 .to_str()
@@ -38,20 +37,18 @@ fn get_content_length(response: &http::Response<Vec<u8>>) -> Result<Option<usize
                 .or(Err(Error::InvalidContentLength))?,
         ))
     } else {
-        // If it doesn't exist, return None
+        // 如果不存在，返回 None
         Ok(None)
     }
 }
 
-/// Attempts to parse the data in the supplied buffer as an HTTP response. Returns one of the
-/// following:
+/// 尝试将提供的缓冲区中的数据解析为 HTTP 响应。返回以下之一：
 ///
-/// * If there is a complete and valid response in the buffer, returns Ok(Some(http::Request))
-/// * If there is an incomplete but valid-so-far response in the buffer, returns Ok(None)
-/// * If there is data in the buffer that is definitely not a valid HTTP response, returns
-///   Err(Error)
+/// * 如果缓冲区中有完整且有效的响应，返回 Ok(Some(http::Request))
+/// * 如果缓冲区中有不完整但到目前为止有效的响应，返回 Ok(None)
+/// * 如果缓冲区中的数据绝对不是有效的 HTTP 响应，返回 Err(Error)
 ///
-/// You won't need to touch this function.
+/// 您不需要修改此函数。
 fn parse_response(buffer: &[u8]) -> Result<Option<(http::Response<Vec<u8>>, usize)>, Error> {
     let mut headers = [httparse::EMPTY_HEADER; MAX_NUM_HEADERS];
     let mut resp = httparse::Response::new(&mut headers);
@@ -73,35 +70,33 @@ fn parse_response(buffer: &[u8]) -> Result<Option<(http::Response<Vec<u8>>, usiz
     }
 }
 
-/// Reads an HTTP response from the provided stream, waiting until a complete set of headers is
-/// sent. This function only reads the response line and headers; the read_body function can
-/// subsequently be called in order to read the response body.
+/// 从提供的流中读取 HTTP 响应，等待直到发送完整的头集合。
+/// 此函数只读取响应行和头；随后可以调用 read_body 函数来读取响应体。
 ///
-/// Returns Ok(http::Response) if a valid response is received, or Error if not.
+/// 如果收到有效响应则返回 Ok(http::Response)，否则返回 Error。
 ///
-/// You will need to modify this function in Milestone 2.
+/// 您需要在里程碑 2 中修改此函数。
 fn read_headers(stream: &mut TcpStream) -> Result<http::Response<Vec<u8>>, Error> {
-    // Try reading the headers from the response. We may not receive all the headers in one shot
-    // (e.g. we might receive the first few bytes of a response, and then the rest follows later).
-    // Try parsing repeatedly until we read a valid HTTP response
+    // 尝试从响应中读取头。我们可能不会一次收到所有头
+    // （例如，我们可能先收到响应的前几个字节，然后其余部分稍后到达）。
+    // 反复尝试解析，直到我们读取到有效的 HTTP 响应
     let mut response_buffer = [0_u8; MAX_HEADERS_SIZE];
     let mut bytes_read = 0;
     loop {
-        // Read bytes from the connection into the buffer, starting at position bytes_read
+        // 从连接中读取字节到缓冲区，从 bytes_read 位置开始
         let new_bytes = stream
             .read(&mut response_buffer[bytes_read..])
             .or_else(|err| Err(Error::ConnectionError(err)))?;
         if new_bytes == 0 {
-            // We didn't manage to read a complete response
+            // 我们没能读取到完整的响应
             return Err(Error::IncompleteResponse);
         }
         bytes_read += new_bytes;
 
-        // See if we've read a valid response so far
+        // 查看我们到目前为止是否已读取到有效响应
         if let Some((mut response, headers_len)) = parse_response(&response_buffer[..bytes_read])? {
-            // We've read a complete set of headers. We may have also read the first part of the
-            // response body; take whatever is left over in the response buffer and save that as
-            // the start of the response body.
+            // 我们已读取了完整的头集合。我们可能还读取了响应体的第一部分；
+            // 取出响应缓冲区中剩余的内容，并将其保存为响应体的开始。
             response
                 .body_mut()
                 .extend_from_slice(&response_buffer[headers_len..bytes_read]);
@@ -110,14 +105,13 @@ fn read_headers(stream: &mut TcpStream) -> Result<http::Response<Vec<u8>>, Error
     }
 }
 
-/// This function reads the body for a response from the stream. If the Content-Length header is
-/// present, it reads that many bytes; otherwise, it reads bytes until the connection is closed.
+/// 此函数从流中读取响应的响应体。如果存在 Content-Length 头，则读取相应字节数；
+/// 否则，读取字节直到连接关闭。
 ///
-/// You will need to modify this function in Milestone 2.
+/// 您需要在里程碑 2 中修改此函数。
 fn read_body(stream: &mut TcpStream, response: &mut http::Response<Vec<u8>>) -> Result<(), Error> {
-    // The response may or may not supply a Content-Length header. If it provides the header, then
-    // we want to read that number of bytes; if it does not, we want to keep reading bytes until
-    // the connection is closed.
+    // 响应可能提供也可能不提供 Content-Length 头。如果提供了该头，则我们
+    // 要读取相应字节数；如果没有提供，我们要持续读取字节直到连接关闭。
     let content_length = get_content_length(response)?;
 
     while content_length.is_none() || response.body().len() < content_length.unwrap() {
@@ -126,45 +120,43 @@ fn read_body(stream: &mut TcpStream, response: &mut http::Response<Vec<u8>>) -> 
             .read(&mut buffer)
             .or_else(|err| Err(Error::ConnectionError(err)))?;
         if bytes_read == 0 {
-            // The server has hung up!
+            // 服务器已挂断！
             if content_length.is_none() {
-                // We've reached the end of the response
+                // 我们已到达响应的末尾
                 break;
             } else {
-                // Content-Length was set, but the server hung up before we managed to read that
-                // number of bytes
+                // Content-Length 已设置，但服务器在我们读取相应字节数之前挂断了
                 return Err(Error::ContentLengthMismatch);
             }
         }
 
-        // Make sure the server doesn't send more bytes than it promised to send
+        // 确保服务器发送的字节数不超过它承诺发送的字节数
         if content_length.is_some() && response.body().len() + bytes_read > content_length.unwrap()
         {
             return Err(Error::ContentLengthMismatch);
         }
 
-        // Make sure server doesn't send more bytes than we allow
+        // 确保服务器发送的字节数不超过我们允许的字节数
         if response.body().len() + bytes_read > MAX_BODY_SIZE {
             return Err(Error::ResponseBodyTooLarge);
         }
 
-        // Append received bytes to the response body
+        // 将接收到的字节追加到响应体
         response.body_mut().extend_from_slice(&buffer[..bytes_read]);
     }
     Ok(())
 }
 
-/// This function reads and returns an HTTP response from a stream, returning an Error if the server
-/// closes the connection prematurely or sends an invalid response.
+/// 此函数从流中读取并返回 HTTP 响应，如果服务器过早关闭连接或发送无效响应则返回 Error。
 ///
-/// You will need to modify this function in Milestone 2.
+/// 您需要在里程碑 2 中修改此函数。
 pub fn read_from_stream(
     stream: &mut TcpStream,
     request_method: &http::Method,
 ) -> Result<http::Response<Vec<u8>>, Error> {
     let mut response = read_headers(stream)?;
-    // A response may have a body as long as it is not responding to a HEAD request and as long as
-    // the response status code is not 1xx, 204 (no content), or 304 (not modified).
+    // 只要响应不是对 HEAD 请求的响应，并且响应状态码不是 1xx、204（无内容）或 304（未修改），
+    // 响应就可能有响应体。
     if !(request_method == http::Method::HEAD
         || response.status().as_u16() < 200
         || response.status() == http::StatusCode::NO_CONTENT
@@ -175,9 +167,9 @@ pub fn read_from_stream(
     Ok(response)
 }
 
-/// This function serializes a response to bytes and writes those bytes to the provided stream.
+/// 此函数将响应序列化为字节并将这些字节写入提供的流。
 ///
-/// You will need to modify this function in Milestone 2.
+/// 您需要在里程碑 2 中修改此函数。
 pub fn write_to_stream(
     response: &http::Response<Vec<u8>>,
     stream: &mut TcpStream,
@@ -205,8 +197,7 @@ pub fn format_response_line(response: &http::Response<Vec<u8>>) -> String {
     )
 }
 
-/// This is a helper function that creates an http::Response containing an HTTP error that can be
-/// sent to a client.
+/// 这是一个辅助函数，创建包含可以发送给客户端的 HTTP 错误的 http::Response。
 pub fn make_http_error(status: http::StatusCode) -> http::Response<Vec<u8>> {
     let body = format!(
         "HTTP {} {}",
