@@ -4,6 +4,8 @@ mod response;
 use clap::Parser;
 use rand::{Rng, SeedableRng};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use threadpool::ThreadPool;
 
 /// 包含从命令行调用 balancebeam 时解析的信息。Clap 宏提供了一种自动构建命令行参数解析器的便捷方式。
 #[derive(Parser, Debug)]
@@ -36,6 +38,12 @@ struct CmdOptions {
         default_value = "0"
     )]
     max_requests_per_minute: usize,
+    #[clap(
+        long,
+        help = "Number of worker threads in the thread pool",
+        default_value = "4"
+    )]
+    num_threads: usize,
 }
 
 /// 包含有关 balancebeam 状态的信息（例如，我们当前代理到哪些服务器，哪些服务器失败了，速率限制计数等）
@@ -80,24 +88,33 @@ fn main() {
     };
     log::info!("Listening for requests on {}", options.bind);
 
+    // 创建线程池
+    let num_threads = options.num_threads;
+    let pool = ThreadPool::new(num_threads);
+    log::info!("Created thread pool with {} worker threads", num_threads);
+
     // 处理传入的连接
-    let state = ProxyState {
+    let state = Arc::new(ProxyState {
         upstream_addresses: options.upstream,
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-    };
+    });
+    
     for stream in listener.incoming() {
         if let Ok(stream) = stream {
-            // 处理连接！
-            handle_connection(stream, &state);
+            let state = Arc::clone(&state);
+            // 在线程池中处理连接
+            pool.execute(move || {
+                handle_connection(stream, &state);
+            });
         }
     }
 }
 
 fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0, state.upstream_addresses.len());
+    let upstream_idx = rng.gen_range(0..state.upstream_addresses.len());
     let upstream_ip = &state.upstream_addresses[upstream_idx];
     TcpStream::connect(upstream_ip).or_else(|err| {
         log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);

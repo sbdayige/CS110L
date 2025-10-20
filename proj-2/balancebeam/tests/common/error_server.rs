@@ -1,10 +1,15 @@
 use crate::common::server::Server;
 use async_trait::async_trait;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Response};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{body::Incoming as IncomingBody, Request, Response};
+use hyper_util::rt::TokioIo;
+use http_body_util::Full;
+use bytes::Bytes;
 use rand::Rng;
 use std::sync::{atomic, Arc};
 use tokio::sync::oneshot;
+use tokio::net::TcpListener;
 
 #[derive(Debug)]
 struct ServerState {
@@ -12,10 +17,10 @@ struct ServerState {
 }
 
 #[allow(dead_code)]
-async fn return_error() -> Result<Response<Body>, hyper::Error> {
+async fn return_error(_req: Request<IncomingBody>) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
     Ok(Response::builder()
         .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::empty())
+        .body(Full::new(Bytes::new()))
         .unwrap())
 }
 
@@ -30,12 +35,11 @@ impl ErrorServer {
     #[allow(dead_code)]
     pub async fn new() -> ErrorServer {
         let mut rng = rand::thread_rng();
-        ErrorServer::new_at_address(format!("127.0.0.1:{}", rng.gen_range(1024, 65535))).await
+        ErrorServer::new_at_address(format!("127.0.0.1:{}", rng.gen_range(1024..65535))).await
     }
 
     #[allow(dead_code)]
     pub async fn new_at_address(bind_addr_string: String) -> ErrorServer {
-        let bind_addr = bind_addr_string.parse().unwrap();
         // Create a one-shot channel that can be used to tell the server to shut down
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -44,26 +48,37 @@ impl ErrorServer {
             requests_received: atomic::AtomicUsize::new(0),
         });
         let server_task_state = server_state.clone();
+        
+        let listener = TcpListener::bind(&bind_addr_string).await.unwrap();
+        
         let server_task = tokio::spawn(async move {
-            let service = make_service_fn(|_| {
-                let server_task_state = server_task_state.clone();
-                async move {
-                    Ok::<_, hyper::Error>(service_fn(move |_req| {
-                        server_task_state
-                            .requests_received
-                            .fetch_add(1, atomic::Ordering::SeqCst);
-                        return_error()
-                    }))
+            let mut shutdown_rx = shutdown_rx;
+            loop {
+                tokio::select! {
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            Ok((stream, _)) => {
+                                let io = TokioIo::new(stream);
+                                let server_task_state = server_task_state.clone();
+                                tokio::spawn(async move {
+                                    server_task_state
+                                        .requests_received
+                                        .fetch_add(1, atomic::Ordering::SeqCst);
+                                    let service = service_fn(return_error);
+                                    if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
+                                        log::error!("Error serving connection: {}", e);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                log::error!("Error accepting connection: {}", e);
+                            }
+                        }
+                    }
+                    _ = &mut shutdown_rx => {
+                        break;
+                    }
                 }
-            });
-            let server = hyper::Server::bind(&bind_addr)
-                .serve(service)
-                .with_graceful_shutdown(async {
-                    shutdown_rx.await.ok();
-                });
-            // Start serving and wait for the server to exit
-            if let Err(e) = server.await {
-                log::error!("Error in ErrorServer: {}", e);
             }
         });
 

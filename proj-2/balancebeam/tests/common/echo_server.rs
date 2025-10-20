@@ -1,10 +1,15 @@
 use crate::common::server::Server;
 use async_trait::async_trait;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Request, Response};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{body::Incoming as IncomingBody, Request, Response};
+use hyper_util::rt::TokioIo;
+use http_body_util::{BodyExt, Full};
+use bytes::Bytes;
 use rand::Rng;
 use std::sync::{atomic, Arc};
 use tokio::sync::oneshot;
+use tokio::net::TcpListener;
 
 #[derive(Debug)]
 struct ServerState {
@@ -13,8 +18,8 @@ struct ServerState {
 
 async fn echo(
     server_state: Arc<ServerState>,
-    req: Request<Body>,
-) -> Result<Response<Body>, hyper::Error> {
+    req: Request<IncomingBody>,
+) -> Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
     server_state
         .requests_received
         .fetch_add(1, atomic::Ordering::SeqCst);
@@ -28,8 +33,9 @@ async fn echo(
     }
     req_text += "\n";
     let mut req_as_bytes = req_text.into_bytes();
-    req_as_bytes.extend(hyper::body::to_bytes(req.into_body()).await?);
-    Ok(Response::new(Body::from(req_as_bytes)))
+    let body_bytes = req.into_body().collect().await?.to_bytes();
+    req_as_bytes.extend_from_slice(&body_bytes);
+    Ok(Response::new(Full::new(Bytes::from(req_as_bytes))))
 }
 
 pub struct EchoServer {
@@ -42,11 +48,10 @@ pub struct EchoServer {
 impl EchoServer {
     pub async fn new() -> EchoServer {
         let mut rng = rand::thread_rng();
-        EchoServer::new_at_address(format!("127.0.0.1:{}", rng.gen_range(1024, 65535))).await
+        EchoServer::new_at_address(format!("127.0.0.1:{}", rng.gen_range(1024..65535))).await
     }
 
     pub async fn new_at_address(bind_addr_string: String) -> EchoServer {
-        let bind_addr = bind_addr_string.parse().unwrap();
         // Create a one-shot channel that can be used to tell the server to shut down
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -55,24 +60,37 @@ impl EchoServer {
             requests_received: atomic::AtomicUsize::new(0),
         });
         let server_task_state = server_state.clone();
+        
+        let listener = TcpListener::bind(&bind_addr_string).await.unwrap();
+        
         let server_task = tokio::spawn(async move {
-            let service = make_service_fn(|_| {
-                let server_task_state = server_task_state.clone();
-                async move {
-                    Ok::<_, hyper::Error>(service_fn(move |req| {
-                        let server_task_state = server_task_state.clone();
-                        echo(server_task_state, req)
-                    }))
+            let mut shutdown_rx = shutdown_rx;
+            loop {
+                tokio::select! {
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            Ok((stream, _)) => {
+                                let io = TokioIo::new(stream);
+                                let server_task_state = server_task_state.clone();
+                                tokio::spawn(async move {
+                                    let service = service_fn(move |req| {
+                                        let server_task_state = server_task_state.clone();
+                                        echo(server_task_state, req)
+                                    });
+                                    if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
+                                        log::error!("Error serving connection: {}", e);
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                log::error!("Error accepting connection: {}", e);
+                            }
+                        }
+                    }
+                    _ = &mut shutdown_rx => {
+                        break;
+                    }
                 }
-            });
-            let server = hyper::Server::bind(&bind_addr)
-                .serve(service)
-                .with_graceful_shutdown(async {
-                    shutdown_rx.await.ok();
-                });
-            // Start serving and wait for the server to exit
-            if let Err(e) = server.await {
-                log::error!("Error in EchoServer: {}", e);
             }
         });
 
