@@ -5,6 +5,10 @@ use clap::Parser;
 use rand::{Rng, SeedableRng};
 use tokio::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+use tokio::sync::RwLock;
+use std::collections::HashSet;
+use std::time::Duration;
+use tokio::time::timeout;
 
 /// 包含从命令行调用 balancebeam 时解析的信息。Clap 宏提供了一种自动构建命令行参数解析器的便捷方式。
 #[derive(Parser, Debug)]
@@ -60,6 +64,9 @@ struct ProxyState {
     max_requests_per_minute: usize,
     /// 我们正在代理到的服务器地址
     upstream_addresses: Vec<String>,
+    /// 存储已失败的上游服务器索引（里程碑 3）
+    /// 使用 RwLock 允许多个任务同时读取，只有在标记服务器失败时才需要写锁
+    dead_upstreams: RwLock<HashSet<usize>>,
 }
 
 #[tokio::main]
@@ -94,6 +101,7 @@ async fn main() {
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
+        dead_upstreams: RwLock::new(HashSet::new()),
     });
     
     loop {
@@ -112,18 +120,100 @@ async fn main() {
     }
 }
 
-async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
+/// 尝试连接到一个存活的上游服务器，如果选中的服务器失败则自动故障转移到其他服务器
+/// 
+/// 该函数实现被动健康检查：
+/// 1. 首先从存活的服务器中随机选择一个
+/// 2. 如果连接失败，将该服务器标记为失败
+/// 3. 重试其他存活的服务器
+/// 4. 如果所有服务器都失败，返回错误
+async fn connect_to_upstream(state: &ProxyState) -> Result<(TcpStream, usize), std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0..state.upstream_addresses.len());
-    let upstream_ip = &state.upstream_addresses[upstream_idx];
-    match TcpStream::connect(upstream_ip).await {
-        Ok(stream) => Ok(stream),
-        Err(err) => {
-            log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
-            Err(err)
+    
+    // 获取所有上游服务器的索引
+    let total_upstreams = state.upstream_addresses.len();
+    
+    // 尝试连接到存活的服务器
+    let mut tried_upstreams = HashSet::new();
+    
+    while tried_upstreams.len() < total_upstreams {
+        // 每次重新读取失败服务器列表（确保获取最新状态）
+        let dead_upstreams = state.dead_upstreams.read().await;
+        
+        // 构建存活且未尝试过的服务器索引列表
+        let available_upstreams: Vec<usize> = (0..total_upstreams)
+            .filter(|idx| !dead_upstreams.contains(idx) && !tried_upstreams.contains(idx))
+            .collect();
+        
+        drop(dead_upstreams);
+        
+        // 如果没有可用的服务器，返回错误
+        if available_upstreams.is_empty() {
+            log::error!("No more available upstream servers to try!");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "All upstream servers are dead or have been tried"
+            ));
+        }
+        
+        // 随机选择一个可用的服务器
+        let random_idx = rng.gen_range(0..available_upstreams.len());
+        let upstream_idx = available_upstreams[random_idx];
+        let upstream_ip = &state.upstream_addresses[upstream_idx];
+        
+        tried_upstreams.insert(upstream_idx);
+        
+        log::debug!("Attempting to connect to upstream {} (index {})", upstream_ip, upstream_idx);
+        
+        // 设置连接超时为2秒
+        let connect_result = timeout(
+            Duration::from_secs(2),
+            TcpStream::connect(upstream_ip)
+        ).await;
+        
+        match connect_result {
+            Ok(Ok(stream)) => {
+                log::info!("Successfully connected to upstream {}", upstream_ip);
+                return Ok((stream, upstream_idx));
+            }
+            Ok(Err(err)) => {
+                log::warn!(
+                    "Failed to connect to upstream {} (index {}): {}. Marking as dead.",
+                    upstream_ip, upstream_idx, err
+                );
+                
+                // 将该服务器标记为失败
+                let mut dead_upstreams = state.dead_upstreams.write().await;
+                dead_upstreams.insert(upstream_idx);
+                drop(dead_upstreams);
+                
+                // 继续尝试其他服务器
+                log::info!("Retrying with another upstream server...");
+            }
+            Err(_) => {
+                // 超时
+                log::warn!(
+                    "Timeout connecting to upstream {} (index {}). Marking as dead.",
+                    upstream_ip, upstream_idx
+                );
+                
+                // 将该服务器标记为失败
+                let mut dead_upstreams = state.dead_upstreams.write().await;
+                dead_upstreams.insert(upstream_idx);
+                drop(dead_upstreams);
+                
+                // 继续尝试其他服务器
+                log::info!("Retrying with another upstream server...");
+            }
         }
     }
-    // TODO: 实现故障转移(里程碑 3)
+    
+    // 所有服务器都尝试过了
+    log::error!("All upstream servers have failed!");
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        "All upstream servers failed during connection attempts"
+    ))
 }
 
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
@@ -138,17 +228,6 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
 async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
-
-    // 打开与随机目标服务器的连接
-    let mut upstream_conn = match connect_to_upstream(state).await {
-        Ok(stream) => stream,
-        Err(_error) => {
-            let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
-            send_response(&mut client_conn, &response).await;
-            return;
-        }
-    };
-    let upstream_ip = client_conn.peer_addr().unwrap().ip().to_string();
 
     // 客户端现在可能会向我们发送一个或多个请求。继续尝试读取请求，直到客户端挂断或我们遇到错误。
     loop {
@@ -180,37 +259,95 @@ async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
             }
         };
         log::info!(
-            "{} -> {}: {}",
+            "{} -> {}",
             client_ip,
-            upstream_ip,
             request::format_request_line(&request)
         );
 
-        // 添加 X-Forwarded-For 头，以便上游服务器知道客户端的 IP 地址。
-        // （我们直接连接到上游服务器，所以没有这个头的话，上游服务器只知道我们的 IP，而不知道客户端的 IP。）
+        // 添加 X-Forwarded-For 头
         request::extend_header_value(&mut request, "x-forwarded-for", &client_ip);
 
-        // 将请求转发到服务器
-        if let Err(error) = request::write_to_stream(&request, &mut upstream_conn).await {
-            log::error!("Failed to send request to upstream {}: {}", upstream_ip, error);
+        // 尝试将请求转发到上游服务器，如果失败则重试其他服务器
+        let max_retries = state.upstream_addresses.len();
+        let mut retry_count = 0;
+        let mut success = false;
+        
+        while retry_count < max_retries && !success {
+            retry_count += 1;
+            log::debug!("Request forwarding attempt {} of {}", retry_count, max_retries);
+            
+            // 为每个请求建立新的上游连接
+            let (mut upstream_conn, upstream_idx) = match connect_to_upstream(state).await {
+                Ok((stream, idx)) => (stream, idx),
+                Err(_error) => {
+                    log::warn!("Failed to connect to any upstream server on attempt {}", retry_count);
+                    if retry_count >= max_retries {
+                        let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
+                        send_response(&mut client_conn, &response).await;
+                        return;
+                    }
+                    continue;
+                }
+            };
+            let upstream_ip = upstream_conn.peer_addr().unwrap().ip().to_string();
+            log::info!("Forwarding request to upstream {}", upstream_ip);
+
+            // 将请求转发到服务器
+            if let Err(error) = request::write_to_stream(&request, &mut upstream_conn).await {
+                log::error!("Failed to send request to upstream {}: {}", upstream_ip, error);
+                drop(upstream_conn);
+                // 标记这个upstream为失败
+                let mut dead_upstreams = state.dead_upstreams.write().await;
+                dead_upstreams.insert(upstream_idx);
+                drop(dead_upstreams);
+                continue; // 重试其他服务器
+            }
+            log::debug!("Forwarded request to server");
+
+            // 读取服务器的响应（设置超时为1秒）
+            let response_result = timeout(
+                Duration::from_secs(1),
+                response::read_from_stream(&mut upstream_conn, request.method())
+            ).await;
+            
+            match response_result {
+                Ok(Ok(response)) => {
+                    // 成功读取响应
+                    log::debug!("Received response from upstream");
+                    send_response(&mut client_conn, &response).await;
+                    log::debug!("Forwarded response to client");
+                    drop(upstream_conn);
+                    success = true;
+                }
+                Ok(Err(error)) => {
+                    log::error!("Error reading response from server {}: {:?}", upstream_ip, error);
+                    drop(upstream_conn);
+                    // 标记这个upstream为失败
+                    let mut dead_upstreams = state.dead_upstreams.write().await;
+                    dead_upstreams.insert(upstream_idx);
+                    drop(dead_upstreams);
+                    // 重试其他服务器
+                    continue;
+                }
+                Err(_) => {
+                    log::error!("Timeout reading response from upstream {}", upstream_ip);
+                    drop(upstream_conn);
+                    // 标记这个upstream为失败
+                    let mut dead_upstreams = state.dead_upstreams.write().await;
+                    dead_upstreams.insert(upstream_idx);
+                    drop(dead_upstreams);
+                    // 重试其他服务器
+                    continue;
+                }
+            }
+        }
+        
+        // 如果所有重试都失败了
+        if !success {
+            log::error!("Failed to forward request after {} attempts", max_retries);
             let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
             send_response(&mut client_conn, &response).await;
             return;
         }
-        log::debug!("Forwarded request to server");
-
-        // 读取服务器的响应
-        let response = match response::read_from_stream(&mut upstream_conn, request.method()).await {
-            Ok(response) => response,
-            Err(error) => {
-                log::error!("Error reading response from server: {:?}", error);
-                let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
-                send_response(&mut client_conn, &response).await;
-                return;
-            }
-        };
-        // 将响应转发给客户端
-        send_response(&mut client_conn, &response).await;
-        log::debug!("Forwarded response to client");
     }
 }
