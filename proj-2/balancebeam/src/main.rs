@@ -3,9 +3,8 @@ mod response;
 
 use clap::Parser;
 use rand::{Rng, SeedableRng};
-use std::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use threadpool::ThreadPool;
 
 /// 包含从命令行调用 balancebeam 时解析的信息。Clap 宏提供了一种自动构建命令行参数解析器的便捷方式。
 #[derive(Parser, Debug)]
@@ -63,7 +62,8 @@ struct ProxyState {
     upstream_addresses: Vec<String>,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // 初始化日志库。您可以使用 `log` 宏打印日志消息：
     // https://docs.rs/log/0.4.8/log/ 您也可以继续使用 print! 语句；这只是看起来更美观一些。
     if let Err(_) = std::env::var("RUST_LOG") {
@@ -79,7 +79,7 @@ fn main() {
     }
 
     // 开始监听连接
-    let listener = match TcpListener::bind(&options.bind) {
+    let listener = match TcpListener::bind(&options.bind).await {
         Ok(listener) => listener,
         Err(err) => {
             log::error!("Could not bind to {}: {}", options.bind, err);
@@ -87,11 +87,6 @@ fn main() {
         }
     };
     log::info!("Listening for requests on {}", options.bind);
-
-    // 创建线程池
-    let num_threads = options.num_threads;
-    let pool = ThreadPool::new(num_threads);
-    log::info!("Created thread pool with {} worker threads", num_threads);
 
     // 处理传入的连接
     let state = Arc::new(ProxyState {
@@ -101,47 +96,55 @@ fn main() {
         max_requests_per_minute: options.max_requests_per_minute,
     });
     
-    for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            let state = Arc::clone(&state);
-            // 在线程池中处理连接
-            pool.execute(move || {
-                handle_connection(stream, &state);
-            });
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let state = Arc::clone(&state);
+                // 为每个连接spawn一个新的异步任务
+                tokio::spawn(async move {
+                    handle_connection(stream, &state).await;
+                });
+            }
+            Err(err) => {
+                log::error!("Error accepting connection: {}", err);
+            }
         }
     }
 }
 
-fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
+async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
     let mut rng = rand::rngs::StdRng::from_entropy();
     let upstream_idx = rng.gen_range(0..state.upstream_addresses.len());
     let upstream_ip = &state.upstream_addresses[upstream_idx];
-    TcpStream::connect(upstream_ip).or_else(|err| {
-        log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
-        Err(err)
-    })
-    // TODO: 实现故障转移（里程碑 3）
+    match TcpStream::connect(upstream_ip).await {
+        Ok(stream) => Ok(stream),
+        Err(err) => {
+            log::error!("Failed to connect to upstream {}: {}", upstream_ip, err);
+            Err(err)
+        }
+    }
+    // TODO: 实现故障转移(里程碑 3)
 }
 
-fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
+async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("{} <- {}", client_ip, response::format_response_line(&response));
-    if let Err(error) = response::write_to_stream(&response, client_conn) {
+    if let Err(error) = response::write_to_stream(&response, client_conn).await {
         log::warn!("Failed to send response to client: {}", error);
         return;
     }
 }
 
-fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
+async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 
     // 打开与随机目标服务器的连接
-    let mut upstream_conn = match connect_to_upstream(state) {
+    let mut upstream_conn = match connect_to_upstream(state).await {
         Ok(stream) => stream,
         Err(_error) => {
             let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
-            send_response(&mut client_conn, &response);
+            send_response(&mut client_conn, &response).await;
             return;
         }
     };
@@ -150,7 +153,7 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
     // 客户端现在可能会向我们发送一个或多个请求。继续尝试读取请求，直到客户端挂断或我们遇到错误。
     loop {
         // 从客户端读取请求
-        let mut request = match request::read_from_stream(&mut client_conn) {
+        let mut request = match request::read_from_stream(&mut client_conn).await {
             Ok(request) => request,
             // 处理客户端关闭连接且不再发送请求的情况
             Err(request::Error::IncompleteRequest(0)) => {
@@ -172,7 +175,7 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
                     request::Error::RequestBodyTooLarge => http::StatusCode::PAYLOAD_TOO_LARGE,
                     request::Error::ConnectionError(_) => http::StatusCode::SERVICE_UNAVAILABLE,
                 });
-                send_response(&mut client_conn, &response);
+                send_response(&mut client_conn, &response).await;
                 continue;
             }
         };
@@ -188,26 +191,26 @@ fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
         request::extend_header_value(&mut request, "x-forwarded-for", &client_ip);
 
         // 将请求转发到服务器
-        if let Err(error) = request::write_to_stream(&request, &mut upstream_conn) {
+        if let Err(error) = request::write_to_stream(&request, &mut upstream_conn).await {
             log::error!("Failed to send request to upstream {}: {}", upstream_ip, error);
             let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
-            send_response(&mut client_conn, &response);
+            send_response(&mut client_conn, &response).await;
             return;
         }
         log::debug!("Forwarded request to server");
 
         // 读取服务器的响应
-        let response = match response::read_from_stream(&mut upstream_conn, request.method()) {
+        let response = match response::read_from_stream(&mut upstream_conn, request.method()).await {
             Ok(response) => response,
             Err(error) => {
                 log::error!("Error reading response from server: {:?}", error);
                 let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
-                send_response(&mut client_conn, &response);
+                send_response(&mut client_conn, &response).await;
                 return;
             }
         };
         // 将响应转发给客户端
-        send_response(&mut client_conn, &response);
+        send_response(&mut client_conn, &response).await;
         log::debug!("Forwarded response to client");
     }
 }

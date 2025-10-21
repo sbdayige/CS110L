@@ -1,5 +1,5 @@
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 const MAX_HEADERS_SIZE: usize = 8000;
 const MAX_BODY_SIZE: usize = 10000000;
@@ -76,7 +76,7 @@ fn parse_response(buffer: &[u8]) -> Result<Option<(http::Response<Vec<u8>>, usiz
 /// 如果收到有效响应则返回 Ok(http::Response)，否则返回 Error。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-fn read_headers(stream: &mut TcpStream) -> Result<http::Response<Vec<u8>>, Error> {
+async fn read_headers(stream: &mut TcpStream) -> Result<http::Response<Vec<u8>>, Error> {
     // 尝试从响应中读取头。我们可能不会一次收到所有头
     // （例如，我们可能先收到响应的前几个字节，然后其余部分稍后到达）。
     // 反复尝试解析，直到我们读取到有效的 HTTP 响应
@@ -86,6 +86,7 @@ fn read_headers(stream: &mut TcpStream) -> Result<http::Response<Vec<u8>>, Error
         // 从连接中读取字节到缓冲区，从 bytes_read 位置开始
         let new_bytes = stream
             .read(&mut response_buffer[bytes_read..])
+            .await
             .or_else(|err| Err(Error::ConnectionError(err)))?;
         if new_bytes == 0 {
             // 我们没能读取到完整的响应
@@ -109,7 +110,7 @@ fn read_headers(stream: &mut TcpStream) -> Result<http::Response<Vec<u8>>, Error
 /// 否则，读取字节直到连接关闭。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-fn read_body(stream: &mut TcpStream, response: &mut http::Response<Vec<u8>>) -> Result<(), Error> {
+async fn read_body(stream: &mut TcpStream, response: &mut http::Response<Vec<u8>>) -> Result<(), Error> {
     // 响应可能提供也可能不提供 Content-Length 头。如果提供了该头，则我们
     // 要读取相应字节数；如果没有提供，我们要持续读取字节直到连接关闭。
     let content_length = get_content_length(response)?;
@@ -118,6 +119,7 @@ fn read_body(stream: &mut TcpStream, response: &mut http::Response<Vec<u8>>) -> 
         let mut buffer = [0_u8; 512];
         let bytes_read = stream
             .read(&mut buffer)
+            .await
             .or_else(|err| Err(Error::ConnectionError(err)))?;
         if bytes_read == 0 {
             // 服务器已挂断！
@@ -150,11 +152,11 @@ fn read_body(stream: &mut TcpStream, response: &mut http::Response<Vec<u8>>) -> 
 /// 此函数从流中读取并返回 HTTP 响应，如果服务器过早关闭连接或发送无效响应则返回 Error。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-pub fn read_from_stream(
+pub async fn read_from_stream(
     stream: &mut TcpStream,
     request_method: &http::Method,
 ) -> Result<http::Response<Vec<u8>>, Error> {
-    let mut response = read_headers(stream)?;
+    let mut response = read_headers(stream).await?;
     // 只要响应不是对 HEAD 请求的响应，并且响应状态码不是 1xx、204（无内容）或 304（未修改），
     // 响应就可能有响应体。
     if !(request_method == http::Method::HEAD
@@ -162,7 +164,7 @@ pub fn read_from_stream(
         || response.status() == http::StatusCode::NO_CONTENT
         || response.status() == http::StatusCode::NOT_MODIFIED)
     {
-        read_body(stream, &mut response)?;
+        read_body(stream, &mut response).await?;
     }
     Ok(response)
 }
@@ -170,20 +172,20 @@ pub fn read_from_stream(
 /// 此函数将响应序列化为字节并将这些字节写入提供的流。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-pub fn write_to_stream(
+pub async fn write_to_stream(
     response: &http::Response<Vec<u8>>,
     stream: &mut TcpStream,
 ) -> Result<(), std::io::Error> {
-    stream.write(&format_response_line(response).into_bytes())?;
-    stream.write(&['\r' as u8, '\n' as u8])?; // \r\n
+    stream.write_all(&format_response_line(response).into_bytes()).await?;
+    stream.write_all(&['\r' as u8, '\n' as u8]).await?; // \r\n
     for (header_name, header_value) in response.headers() {
-        stream.write(&format!("{}: ", header_name).as_bytes())?;
-        stream.write(header_value.as_bytes())?;
-        stream.write(&['\r' as u8, '\n' as u8])?; // \r\n
+        stream.write_all(&format!("{}: ", header_name).as_bytes()).await?;
+        stream.write_all(header_value.as_bytes()).await?;
+        stream.write_all(&['\r' as u8, '\n' as u8]).await?; // \r\n
     }
-    stream.write(&['\r' as u8, '\n' as u8])?;
+    stream.write_all(&['\r' as u8, '\n' as u8]).await?;
     if response.body().len() > 0 {
-        stream.write(response.body())?;
+        stream.write_all(response.body()).await?;
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 use std::cmp::min;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 const MAX_HEADERS_SIZE: usize = 8000;
 const MAX_BODY_SIZE: usize = 10000000;
@@ -96,7 +96,7 @@ fn parse_request(buffer: &[u8]) -> Result<Option<(http::Request<Vec<u8>>, usize)
 /// 如果收到有效请求则返回 Ok(http::Request)，否则返回 Error。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
+async fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
     // 尝试从请求中读取头。我们可能不会一次收到所有头
     // （例如，我们可能先收到请求的前几个字节，然后其余部分稍后到达）。
     // 反复尝试解析，直到我们读取到有效的 HTTP 请求
@@ -106,6 +106,7 @@ fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error>
         // 从连接中读取字节到缓冲区，从 bytes_read 位置开始
         let new_bytes = stream
             .read(&mut request_buffer[bytes_read..])
+            .await
             .or_else(|err| Err(Error::ConnectionError(err)))?;
         if new_bytes == 0 {
             // 我们没能读取到完整的请求
@@ -130,7 +131,7 @@ fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error>
 /// 此函数从流中读取相应字节数。如果成功则返回 Ok(())，如果无法读取 Content-Length 字节数则返回 Err(Error)。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-fn read_body(
+async fn read_body(
     stream: &mut TcpStream,
     request: &mut http::Request<Vec<u8>>,
     content_length: usize,
@@ -139,7 +140,7 @@ fn read_body(
     while request.body().len() < content_length {
         // 一次最多读取 512 字节。（如果客户端只发送了小的请求体，则只分配读取该请求体所需的空间。）
         let mut buffer = vec![0_u8; min(512, content_length)];
-        let bytes_read = stream.read(&mut buffer).or_else(|err| Err(Error::ConnectionError(err)))?;
+        let bytes_read = stream.read(&mut buffer).await.or_else(|err| Err(Error::ConnectionError(err)))?;
 
         // 确保客户端仍在向我们发送字节
         if bytes_read == 0 {
@@ -169,15 +170,15 @@ fn read_body(
 /// 此函数从流中读取并返回 HTTP 请求，如果客户端过早关闭连接或发送无效请求则返回 Error。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-pub fn read_from_stream(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
+pub async fn read_from_stream(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
     // 读取头
-    let mut request = read_headers(stream)?;
+    let mut request = read_headers(stream).await?;
     // 如果客户端提供了 Content-Length 头（对于 POST 请求会提供），则读取请求体
     if let Some(content_length) = get_content_length(&request)? {
         if content_length > MAX_BODY_SIZE {
             return Err(Error::RequestBodyTooLarge);
         } else {
-            read_body(stream, &mut request, content_length)?;
+            read_body(stream, &mut request, content_length).await?;
         }
     }
     Ok(request)
@@ -186,20 +187,20 @@ pub fn read_from_stream(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>
 /// 此函数将请求序列化为字节并将这些字节写入提供的流。
 ///
 /// 您需要在里程碑 2 中修改此函数。
-pub fn write_to_stream(
+pub async fn write_to_stream(
     request: &http::Request<Vec<u8>>,
     stream: &mut TcpStream,
 ) -> Result<(), std::io::Error> {
-    stream.write(&format_request_line(request).into_bytes())?;
-    stream.write(&['\r' as u8, '\n' as u8])?; // \r\n
+    stream.write_all(&format_request_line(request).into_bytes()).await?;
+    stream.write_all(&['\r' as u8, '\n' as u8]).await?; // \r\n
     for (header_name, header_value) in request.headers() {
-        stream.write(&format!("{}: ", header_name).as_bytes())?;
-        stream.write(header_value.as_bytes())?;
-        stream.write(&['\r' as u8, '\n' as u8])?; // \r\n
+        stream.write_all(&format!("{}: ", header_name).as_bytes()).await?;
+        stream.write_all(header_value.as_bytes()).await?;
+        stream.write_all(&['\r' as u8, '\n' as u8]).await?; // \r\n
     }
-    stream.write(&['\r' as u8, '\n' as u8])?;
+    stream.write_all(&['\r' as u8, '\n' as u8]).await?;
     if request.body().len() > 0 {
-        stream.write(request.body())?;
+        stream.write_all(request.body()).await?;
     }
     Ok(())
 }
